@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calibrador EQ</title>
+  <style>
+    :root { color-scheme: light; font-family: Arial, sans-serif; }
+    body { margin: 0; background: #f7f7f4; color: #151515; }
+    main { max-width: 760px; margin: 0 auto; padding: 28px 18px 36px; }
+    h1 { font-size: 24px; margin: 0 0 20px; }
+    .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+    .metric { border: 1px solid #d8d8d2; background: #fff; border-radius: 8px; padding: 16px; }
+    .label { font-size: 12px; text-transform: uppercase; color: #61615a; }
+    .value { font-size: 34px; margin-top: 6px; }
+    .controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 16px 0; }
+    button { min-height: 48px; border: 1px solid #b9b9b0; background: #fff; border-radius: 8px; font-size: 16px; cursor: pointer; }
+    button.primary { background: #171717; color: white; border-color: #171717; }
+    canvas { width: 100%; height: 260px; background: #fff; border: 1px solid #d8d8d2; border-radius: 8px; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .settings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+    .settings label { display: grid; gap: 5px; font-size: 12px; color: #61615a; }
+    .settings input { min-height: 40px; border: 1px solid #b9b9b0; border-radius: 8px; padding: 0 10px; font-size: 16px; }
+    .tone { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: end; margin: 14px 0; }
+    .tone label { display: grid; gap: 5px; font-size: 12px; color: #61615a; }
+    .tone input { width: 100%; }
+    .status { margin-top: 14px; color: #4f4f49; min-height: 24px; }
+    @media (max-width: 620px) {
+      .readout { grid-template-columns: 1fr; }
+      .controls { grid-template-columns: repeat(2, 1fr); }
+      .controls button.primary { grid-column: 1 / -1; }
+      .settings { grid-template-columns: 1fr 1fr; }
+      .tone { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Calibrador EQ</h1>
+
+    <section class="settings">
+      <label>Início (Hz)<input id="minHz" type="number" value="25" min="1" max="20000"></label>
+      <label>Fim (Hz)<input id="maxHz" type="number" value="80" min="1" max="20000"></label>
+      <label>Passo (Hz)<input id="stepHz" type="number" value="1" min="1" max="100"></label>
+      <button id="applyRange">Aplicar</button>
+    </section>
+
+    <section class="readout">
+      <div class="metric">
+        <div class="label">Frequência atual</div>
+        <div class="value" id="frequency">25 Hz</div>
+      </div>
+      <div class="metric">
+        <div class="label">Ganho</div>
+        <div class="value" id="gain">+0.0 dB</div>
+      </div>
+    </section>
+
+    <div class="controls">
+      <button id="back">Voltar</button>
+      <button id="down">-0,5 dB</button>
+      <button class="primary" id="start">Iniciar</button>
+      <button id="up">+0,5 dB</button>
+      <button id="next">Avançar</button>
+    </div>
+
+    <section class="tone">
+      <label>Volume do tom<input id="volume" type="range" min="0" max="0.5" step="0.01" value="0.14"></label>
+      <button id="testTone">Teste 440 Hz</button>
+      <button id="stop">Parar</button>
+    </section>
+
+    <canvas id="chart" width="900" height="320"></canvas>
+
+    <div class="row">
+      <button id="voice">Voz: desligada</button>
+      <button id="export">Exportar JSON</button>
+    </div>
+
+    <div class="status" id="status"></div>
+  </main>
+
+  <script>
+    let minHz = 25;
+    let maxHz = 80;
+    let stepHz = 1;
+    const gainStep = 0.5;
+    const maxBoostDb = 3;
+    const minGainDb = -12;
+    const maxGainDb = 6;
+    const referenceVolume = 0.14;
+    let frequencies = createFrequencies();
+    let gains = new Map(frequencies.map((hz) => [hz, 0]));
+
+    let index = 0;
+    let audioContext;
+    let oscillator;
+    let toneGain;
+    let isPlaying = false;
+    let recognition;
+    let voiceOn = false;
+    let ignoreVoiceUntil = 0;
+
+    const $ = (id) => document.getElementById(id);
+    const frequencyEl = $("frequency");
+    const gainEl = $("gain");
+    const statusEl = $("status");
+    const canvas = $("chart");
+    const ctx = canvas.getContext("2d");
+
+    function createFrequencies() {
+      const items = [];
+      for (let hz = minHz; hz <= maxHz; hz += stepHz) {
+        items.push(hz);
+      }
+      return items;
+    }
+
+    function currentHz() {
+      return frequencies[index];
+    }
+
+    function currentGain() {
+      return gains.get(currentHz()) || 0;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function formatDb(value) {
+      return `${value >= 0 ? "+" : ""}${value.toFixed(1)} dB`;
+    }
+
+    function updateUi() {
+      frequencyEl.textContent = `${currentHz()} Hz`;
+      gainEl.textContent = formatDb(currentGain());
+      drawChart();
+      setToneFrequency(currentHz());
+      applyOutputLevel();
+    }
+
+    function applyRange() {
+      const nextMin = Math.round(Number($("minHz").value));
+      const nextMax = Math.round(Number($("maxHz").value));
+      const nextStep = Math.round(Number($("stepHz").value));
+      if (!Number.isFinite(nextMin) || !Number.isFinite(nextMax) || !Number.isFinite(nextStep)
+          || nextMin < 1 || nextMax > 20000 || nextMin >= nextMax || nextStep < 1) {
+        statusEl.textContent = "Faixa inválida.";
+        return;
+      }
+      minHz = nextMin;
+      maxHz = nextMax;
+      stepHz = nextStep;
+      frequencies = createFrequencies();
+      gains = new Map(frequencies.map((hz) => [hz, gains.get(hz) || 0]));
+      index = 0;
+      ignoreVoiceUntil = Date.now() + 500;
+      updateUi();
+    }
+
+    async function start() {
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) {
+          statusEl.textContent = "Este navegador não suporta Web Audio.";
+          return;
+        }
+        if (!audioContext) {
+          audioContext = new AudioContextClass();
+          toneGain = audioContext.createGain();
+          toneGain.gain.value = 0;
+          toneGain.connect(audioContext.destination);
+        }
+        if (!oscillator) {
+          oscillator = audioContext.createOscillator();
+          oscillator.type = "sine";
+          oscillator.frequency.value = currentHz();
+          oscillator.connect(toneGain);
+          oscillator.start();
+        }
+        isPlaying = true;
+        await audioContext.resume();
+        setToneFrequency(currentHz());
+        applyOutputLevel();
+        $("start").textContent = "Tocando";
+        statusEl.textContent = `Tom ativo em ${currentHz()} Hz. Se não ouvir abaixo de 40 Hz, teste com fone/DAC ou use 440 Hz para validar o áudio.`;
+      } catch (error) {
+        statusEl.textContent = `Falha ao iniciar áudio: ${error.message}`;
+      }
+    }
+
+    async function togglePlayback() {
+      if (isPlaying) {
+        stopTone();
+        return;
+      }
+      await start();
+    }
+
+    function stopTone() {
+      if (!audioContext || !toneGain) return;
+      isPlaying = false;
+      setToneVolume(0);
+      $("start").textContent = "Iniciar";
+      statusEl.textContent = "Tom parado. Clique em Iniciar para liberar o áudio pelo navegador.";
+    }
+
+    function setToneFrequency(hz) {
+      if (!audioContext || !oscillator) return;
+      oscillator.frequency.setTargetAtTime(hz, audioContext.currentTime, 0.015);
+    }
+
+    function setToneVolume(value) {
+      if (!audioContext || !toneGain) return;
+      const volume = clamp(Number(value) || 0, 0, 0.5);
+      toneGain.gain.setTargetAtTime(volume, audioContext.currentTime, 0.02);
+    }
+
+    function applyOutputLevel() {
+      if (!isPlaying) return;
+      const baseVolume = clamp(Number($("volume").value) || referenceVolume, 0, 0.5);
+      const gainMultiplier = Math.pow(10, currentGain() / 20);
+      setToneVolume(baseVolume * gainMultiplier);
+    }
+
+    async function testAudibleTone() {
+      await start();
+      if (!audioContext || !oscillator) return;
+      oscillator.frequency.setTargetAtTime(440, audioContext.currentTime, 0.015);
+      applyOutputLevel();
+      statusEl.textContent = "Teste em 440 Hz por 2 segundos.";
+      setTimeout(() => {
+        if (isPlaying) {
+          setToneFrequency(currentHz());
+          statusEl.textContent = `Tom ativo em ${currentHz()} Hz.`;
+        }
+      }, 2000);
+    }
+
+    function changeGain(delta) {
+      const next = clamp(currentGain() + delta, minGainDb, maxGainDb);
+      gains.set(currentHz(), Math.round(next * 2) / 2);
+      updateUi();
+      statusEl.textContent = `Tom ativo em ${currentHz()} Hz com ganho ${formatDb(currentGain())}.`;
+    }
+
+    function move(delta) {
+      index = clamp(index + delta, 0, frequencies.length - 1);
+      ignoreVoiceUntil = Date.now() + 500;
+      updateUi();
+    }
+
+    function drawChart() {
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "#e3e3dc";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 6; i++) {
+        const y = 24 + i * ((height - 48) / 6);
+        ctx.beginPath();
+        ctx.moveTo(36, y);
+        ctx.lineTo(width - 18, y);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#161616";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      const denominator = Math.max(1, frequencies.length - 1);
+      frequencies.forEach((hz, i) => {
+        const x = 36 + i * ((width - 54) / denominator);
+        const y = 24 + (maxGainDb - gains.get(hz)) * ((height - 48) / (maxGainDb - minGainDb));
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      const x = 36 + index * ((width - 54) / denominator);
+      ctx.strokeStyle = "#b3261e";
+      ctx.beginPath();
+      ctx.moveTo(x, 18);
+      ctx.lineTo(x, height - 18);
+      ctx.stroke();
+    }
+
+    function smoothedMap() {
+      const raw = frequencies.map((hz) => clamp(gains.get(hz) || 0, minGainDb, maxBoostDb));
+      const smooth = raw.map((value, i) => {
+        const prev = raw[Math.max(0, i - 1)];
+        const next = raw[Math.min(raw.length - 1, i + 1)];
+        const averaged = (prev + value * 2 + next) / 4;
+        return Math.min(averaged, value + 1);
+      });
+      return frequencies.map((hz, i) => ({ frequencyHz: hz, gainDb: Math.round(smooth[i] * 2) / 2 }));
+    }
+
+    function toFilters(points) {
+      const filters = [];
+      let run = [];
+      for (const point of points) {
+        if (point.gainDb < -0.25 || point.gainDb > 0.75) {
+          run.push(point);
+        } else if (run.length) {
+          filters.push(runToFilter(run));
+          run = [];
+        }
+      }
+      if (run.length) filters.push(runToFilter(run));
+      return filters;
+    }
+
+    function runToFilter(run) {
+      const weighted = run.reduce((sum, p) => sum + p.frequencyHz * Math.max(0.5, Math.abs(p.gainDb)), 0);
+      const weights = run.reduce((sum, p) => sum + Math.max(0.5, Math.abs(p.gainDb)), 0);
+      const frequencyHz = weighted / weights;
+      const gainDb = run.reduce((best, p) => Math.abs(p.gainDb) > Math.abs(best) ? p.gainDb : best, 0);
+      const width = Math.max(1, run[run.length - 1].frequencyHz - run[0].frequencyHz + 1);
+      const q = clamp(frequencyHz / width, 0.7, 10);
+      return {
+        type: "peaking",
+        frequencyHz: Math.round(frequencyHz * 10) / 10,
+        gainDb: Math.round(gainDb * 2) / 2,
+        q: Math.round(q * 10) / 10
+      };
+    }
+
+    function exportProfile() {
+      const points = smoothedMap();
+      const minCut = Math.min(0, ...points.map((p) => p.gainDb));
+      const preampDb = Math.round(clamp(minCut / 3, -9, 0) * 2) / 2;
+      const profile = {
+        version: 1,
+        name: "Perfil personalizado",
+        frequencyRange: {
+          startHz: minHz,
+          endHz: maxHz,
+          stepHz
+        },
+        preampDb,
+        calibrationPoints: points,
+        filters: toFilters(points)
+      };
+      const blob = new Blob([JSON.stringify(profile, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      document.body.appendChild(link);
+      link.href = URL.createObjectURL(blob);
+      link.download = "eq-profile-v1.json";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      link.remove();
+      statusEl.textContent = `Perfil exportado com ${points.length} frequências e ${profile.filters.length} filtros.`;
+    }
+
+    function handleCommand(text) {
+      if (!voiceOn || Date.now() < ignoreVoiceUntil) return;
+      const normalized = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (normalized.includes("diminuir")) changeGain(-gainStep);
+      if (normalized.includes("aumentar")) changeGain(gainStep);
+      if (normalized.includes("avancar")) move(1);
+      if (normalized.includes("voltar")) move(-1);
+    }
+
+    function toggleVoice() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        statusEl.textContent = "Reconhecimento de voz indisponível neste navegador.";
+        return;
+      }
+      if (voiceOn) {
+        voiceOn = false;
+        recognition.stop();
+        $("voice").textContent = "Voz: desligada";
+        return;
+      }
+      recognition = new SpeechRecognition();
+      recognition.lang = "pt-BR";
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.onresult = (event) => {
+        const last = event.results[event.results.length - 1][0].transcript;
+        handleCommand(last);
+      };
+      recognition.onend = () => { if (voiceOn) recognition.start(); };
+      recognition.start();
+      voiceOn = true;
+      $("voice").textContent = "Voz: ligada";
+      statusEl.textContent = "Voz ativa. Use fone de ouvido para reduzir falsos acionamentos pelo microfone.";
+    }
+
+    $("start").addEventListener("click", togglePlayback);
+    $("down").addEventListener("click", () => changeGain(-gainStep));
+    $("up").addEventListener("click", () => changeGain(gainStep));
+    $("next").addEventListener("click", () => move(1));
+    $("back").addEventListener("click", () => move(-1));
+    $("voice").addEventListener("click", toggleVoice);
+    $("export").addEventListener("click", exportProfile);
+    $("applyRange").addEventListener("click", applyRange);
+    $("volume").addEventListener("input", applyOutputLevel);
+    $("testTone").addEventListener("click", testAudibleTone);
+    $("stop").addEventListener("click", stopTone);
+    updateUi();
+  </script>
+</body>
+</html>
