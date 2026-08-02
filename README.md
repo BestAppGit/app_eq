@@ -100,7 +100,7 @@ No Redmi Note 14 testado, o `Equalizer` reportou 5 bandas e mapeou toda a faixa 
 
 ### Teste DynamicsProcessing
 
-Cria um `DynamicsProcessing` na sessão global `0` com 11 bandas de cutoff entre `55 Hz` e `65 Hz`, aplicando um corte forte em `59 Hz`.
+Cria um `DynamicsProcessing` na sessão global `0` com 11 bandas de cutoff entre `55 Hz` e `65 Hz`, aplicando um corte forte em `59 Hz` no Pre-EQ e no Post-EQ.
 
 Use um player externo tocando sweep ou tons nessa região e clique em `Aplicar teste 55-65 Hz`. Se o corte soar estreito e claramente localizado em `59 Hz`, esta API pode ser investigada como solução. Se a mudança afetar uma região ampla ou não funcionar em áudio de outros apps, ela não atende ao requisito.
 
