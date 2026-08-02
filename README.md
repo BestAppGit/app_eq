@@ -96,11 +96,29 @@ Mapeamento de 55 Hz a 65 Hz
 
 Se várias frequências próximas, como `59 Hz`, `60 Hz` e `63 Hz`, caírem na mesma banda, o `Equalizer` Android não serve para calibração frequência por frequência.
 
+No Redmi Note 14 testado, o `Equalizer` reportou 5 bandas e mapeou toda a faixa de `55 Hz` a `65 Hz` para a mesma banda de centro `60 Hz`. Isso reprova o `Equalizer` clássico para o requisito de correção 1 Hz por 1 Hz.
+
 ### Teste DynamicsProcessing
 
 Cria um `DynamicsProcessing` na sessão global `0` com 11 bandas de cutoff entre `55 Hz` e `65 Hz`, aplicando um corte forte em `59 Hz`.
 
 Use um player externo tocando sweep ou tons nessa região e clique em `Aplicar teste 55-65 Hz`. Se o corte soar estreito e claramente localizado em `59 Hz`, esta API pode ser investigada como solução. Se a mudança afetar uma região ampla ou não funcionar em áudio de outros apps, ela não atende ao requisito.
+
+O teste não aplica preamp, para evitar que a música inteira fique mais baixa e confunda a avaliação.
+
+### Medidor DynamicsProcessing
+
+Use arquivos WAV de tom fixo reproduzidos pelo YouTube Music, já que ele aceita o efeito neste aparelho. O fluxo é:
+
+```text
+1. Reproduzir o WAV externo, por exemplo 59 Hz.
+2. Clicar em Medir sem efeito.
+3. Clicar em Aplicar teste 59 Hz.
+4. Clicar em Medir com efeito.
+5. Comparar o delta de 55 Hz a 65 Hz.
+```
+
+Se `59 Hz` cair bastante e `58 Hz`/`60 Hz` ficarem próximos de `0 dB` de delta, o corte é estreito. Se várias frequências vizinhas caírem juntas, o `DynamicsProcessing` está trabalhando como banda ampla.
 
 ## Observação
 

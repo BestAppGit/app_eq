@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.audiofx.Equalizer;
 import android.media.audiofx.DynamicsProcessing;
+import android.media.audiofx.Visualizer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,6 +21,7 @@ import org.json.JSONException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_IMPORT_PROFILE = 1001;
@@ -33,13 +35,14 @@ public class MainActivity extends Activity {
     private TextView profileLabel;
     private Button toggleProfile;
     private DynamicsProcessing dynamicsProcessing;
+    private float[] dynamicsBaseline;
+    private float[] dynamicsProcessed;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         requestNotificationPermission();
-        setupEqualizer();
         setContentView(createUi());
         refreshProfileUi();
     }
@@ -53,7 +56,7 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    private void setupEqualizer() {
+    private boolean setupEqualizer() {
         try {
             equalizer = new Equalizer(0, 0);
             equalizer.setEnabled(true);
@@ -63,10 +66,12 @@ public class MainActivity extends Activity {
             maxLevel = levelRange[1];
             band60Hz = findClosestBand(TARGET_FREQUENCY_HZ);
             currentLevel = equalizer.getBandLevel(band60Hz);
+            return true;
         } catch (RuntimeException error) {
             equalizer = null;
             currentLevel = 0;
             Toast.makeText(this, "Equalizador indisponível neste aparelho.", Toast.LENGTH_LONG).show();
+            return false;
         }
     }
 
@@ -152,6 +157,14 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT
         ));
 
+        Button dynamicsMeter = new Button(this);
+        dynamicsMeter.setText("Medidor DynamicsProcessing");
+        dynamicsMeter.setOnClickListener(view -> showDynamicsMeter());
+        root.addView(dynamicsMeter, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
         return root;
     }
 
@@ -180,6 +193,10 @@ public class MainActivity extends Activity {
     }
 
     private void changeLevel(int deltaMb) {
+        if (equalizer == null && !setupEqualizer()) {
+            return;
+        }
+
         if (equalizer == null || band60Hz < 0) {
             Toast.makeText(this, "Equalizador indisponível.", Toast.LENGTH_SHORT).show();
             return;
@@ -281,6 +298,9 @@ public class MainActivity extends Activity {
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2001);
         }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 2002);
+        }
     }
 
     private void showEqualizerDiagnostic() {
@@ -374,6 +394,7 @@ public class MainActivity extends Activity {
             report.append(hz).append(" Hz cutoff, ganho ").append(gain).append(" dB\n");
         }
         report.append("\nAtenção: nesta API, a frequência é cutoff/topo de banda, não centro paramétrico com Q.");
+        report.append("\nO teste não aplica preamp para não abaixar a música inteira.");
         return report.toString();
     }
 
@@ -402,7 +423,7 @@ public class MainActivity extends Activity {
                     false,
                     0,
                     false
-            ).setPreEqAllChannelsTo(preEq).setInputGainAllChannelsTo(-3f).build();
+            ).setPreEqAllChannelsTo(preEq).setInputGainAllChannelsTo(0f).build();
 
             dynamicsProcessing = new DynamicsProcessing(0, 0, config);
             dynamicsProcessing.setEnabled(true);
@@ -426,6 +447,155 @@ public class MainActivity extends Activity {
             releaseDynamicsProcessing();
             return "Falha no DynamicsProcessing: " + error.getMessage();
         }
+    }
+
+    private void showDynamicsMeter() {
+        LinearLayout root = createDiagnosticRoot("Medidor DynamicsProcessing");
+        TextView report = createReportText(buildMeterReport("Toque um WAV externo, por exemplo 59 Hz, no YouTube Music."));
+        root.addView(report);
+
+        Button baseline = new Button(this);
+        baseline.setText("Medir sem efeito");
+        baseline.setOnClickListener(view -> measureVisualizerAsync(false, report));
+        root.addView(baseline, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        Button apply = new Button(this);
+        apply.setText("Aplicar teste 59 Hz");
+        apply.setOnClickListener(view -> {
+            String result = applyDynamicsProcessingTest();
+            report.setText(buildMeterReport(result));
+        });
+        root.addView(apply, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        Button processed = new Button(this);
+        processed.setText("Medir com efeito");
+        processed.setOnClickListener(view -> measureVisualizerAsync(true, report));
+        root.addView(processed, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        Button remove = new Button(this);
+        remove.setText("Remover efeito");
+        remove.setOnClickListener(view -> {
+            releaseDynamicsProcessing();
+            report.setText(buildMeterReport("Efeito removido."));
+        });
+        root.addView(remove, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        root.addView(createBackButton());
+        setContentView(wrapScrollable(root));
+    }
+
+    private void measureVisualizerAsync(boolean processed, TextView report) {
+        report.setText(buildMeterReport("Medindo áudio global por 1 segundo..."));
+        new Thread(() -> {
+            String message;
+            try {
+                float[] levels = measureVisualizerLevels();
+                if (processed) {
+                    dynamicsProcessed = levels;
+                } else {
+                    dynamicsBaseline = levels;
+                }
+                message = processed ? "Medição com efeito concluída." : "Medição sem efeito concluída.";
+            } catch (RuntimeException error) {
+                message = "Falha ao medir com Visualizer: " + error.getMessage();
+            }
+            String finalMessage = message;
+            runOnUiThread(() -> report.setText(buildMeterReport(finalMessage)));
+        }).start();
+    }
+
+    private float[] measureVisualizerLevels() {
+        Visualizer visualizer = null;
+        try {
+            visualizer = new Visualizer(0);
+            int captureSize = Visualizer.getCaptureSizeRange()[1];
+            visualizer.setCaptureSize(captureSize);
+            visualizer.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED);
+            visualizer.setEnabled(true);
+
+            byte[] fft = new byte[captureSize];
+            float[] sums = new float[11];
+            int[] counts = new int[11];
+            long deadline = System.currentTimeMillis() + 1000;
+            while (System.currentTimeMillis() < deadline) {
+                int result = visualizer.getFft(fft);
+                if (result == Visualizer.SUCCESS) {
+                    float[] sample = extractLowFrequencyLevels(fft, visualizer.getSamplingRate() / 1000f);
+                    for (int i = 0; i < sample.length; i++) {
+                        sums[i] += sample[i];
+                        counts[i]++;
+                    }
+                }
+                try {
+                    Thread.sleep(60);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            float[] levels = new float[11];
+            for (int i = 0; i < levels.length; i++) {
+                levels[i] = counts[i] == 0 ? -120f : sums[i] / counts[i];
+            }
+            return levels;
+        } finally {
+            if (visualizer != null) {
+                visualizer.release();
+            }
+        }
+    }
+
+    private float[] extractLowFrequencyLevels(byte[] fft, float sampleRateHz) {
+        float[] levels = new float[11];
+        int captureSize = fft.length;
+        for (int i = 0; i < levels.length; i++) {
+            int targetHz = 55 + i;
+            int bin = Math.max(1, Math.round(targetHz * captureSize / sampleRateHz));
+            bin = Math.min(bin, captureSize / 2 - 1);
+            int real = fft[2 * bin];
+            int imag = fft[2 * bin + 1];
+            double magnitude = Math.sqrt(real * real + imag * imag);
+            levels[i] = (float) (20.0 * Math.log10(Math.max(1.0, magnitude)));
+        }
+        return levels;
+    }
+
+    private String buildMeterReport(String message) {
+        StringBuilder report = new StringBuilder();
+        report.append(message).append("\n\n");
+        report.append("Fluxo recomendado:\n");
+        report.append("1. Toque um WAV externo no YouTube Music.\n");
+        report.append("2. Clique em Medir sem efeito.\n");
+        report.append("3. Clique em Aplicar teste 59 Hz.\n");
+        report.append("4. Clique em Medir com efeito.\n\n");
+        report.append("Frequência | sem | com | delta\n");
+        for (int i = 0; i < 11; i++) {
+            int hz = 55 + i;
+            String base = dynamicsBaseline == null ? "--" : formatDbValue(dynamicsBaseline[i]);
+            String with = dynamicsProcessed == null ? "--" : formatDbValue(dynamicsProcessed[i]);
+            String delta = dynamicsBaseline == null || dynamicsProcessed == null
+                    ? "--"
+                    : formatDbValue(dynamicsProcessed[i] - dynamicsBaseline[i]);
+            report.append(hz).append(" Hz | ")
+                    .append(base).append(" | ")
+                    .append(with).append(" | ")
+                    .append(delta).append("\n");
+        }
+        report.append("\nInterpretação: se 59 Hz cair forte e 58/60 Hz ficarem próximos de 0 dB de delta, o corte é estreito. Se vários vizinhos caírem juntos, a banda é ampla.");
+        return report.toString();
     }
 
     private LinearLayout createDiagnosticRoot(String titleText) {
@@ -455,6 +625,7 @@ public class MainActivity extends Activity {
         Button back = new Button(this);
         back.setText("Voltar");
         back.setOnClickListener(view -> {
+            releaseDynamicsProcessing();
             setContentView(createUi());
             refreshProfileUi();
         });
@@ -468,7 +639,11 @@ public class MainActivity extends Activity {
     }
 
     private String formatMb(short milliBel) {
-        return String.format(java.util.Locale.US, "%.1f dB", milliBel / 100f);
+        return String.format(Locale.US, "%.1f dB", milliBel / 100f);
+    }
+
+    private String formatDbValue(float value) {
+        return String.format(Locale.US, "%+.1f dB", value);
     }
 
     private void releaseDynamicsProcessing() {
