@@ -26,7 +26,7 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     private static final int REQUEST_IMPORT_PROFILE = 1001;
     private static final int TARGET_FREQUENCY_HZ = 60;
-    private static final float DYNAMICS_TEST_CUT_DB = -24f;
+    private static final float DYNAMICS_TEST_CUT_DB = -12f;
 
     private Equalizer equalizer;
     private short band60Hz = -1;
@@ -359,7 +359,7 @@ public class MainActivity extends Activity {
         root.addView(report);
 
         Button apply = new Button(this);
-        apply.setText("Aplicar teste forte 59 Hz");
+        apply.setText("Aplicar teste 55-65 Hz");
         apply.setOnClickListener(view -> {
             String result = applyDynamicsProcessingTest();
             report.setText(buildDynamicsReport() + "\n\n" + result);
@@ -395,7 +395,7 @@ public class MainActivity extends Activity {
             report.append(hz).append(" Hz cutoff, ganho ").append(gain).append(" dB\n");
         }
         report.append("\nAtenção: nesta API, a frequência é cutoff/topo de banda, não centro paramétrico com Q.");
-        report.append("\nO teste aplica a mesma curva no Pre-EQ e no Post-EQ, sem preamp.");
+        report.append("\nEste é o modo legado que funcionou no aparelho: Pre-EQ com inputGain -3 dB.");
         return report.toString();
     }
 
@@ -408,12 +408,10 @@ public class MainActivity extends Activity {
             releaseDynamicsProcessing();
             int bandCount = 11;
             DynamicsProcessing.Eq preEq = new DynamicsProcessing.Eq(true, true, bandCount);
-            DynamicsProcessing.Eq postEq = new DynamicsProcessing.Eq(true, true, bandCount);
             for (int i = 0; i < bandCount; i++) {
                 int cutoffHz = 55 + i;
                 float gainDb = cutoffHz == 59 ? DYNAMICS_TEST_CUT_DB : 0f;
                 preEq.setBand(i, new DynamicsProcessing.EqBand(true, cutoffHz, gainDb));
-                postEq.setBand(i, new DynamicsProcessing.EqBand(true, cutoffHz, gainDb));
             }
 
             DynamicsProcessing.Config config = new DynamicsProcessing.Config.Builder(
@@ -423,13 +421,12 @@ public class MainActivity extends Activity {
                     bandCount,
                     false,
                     0,
-                    true,
-                    bandCount,
+                    false,
+                    0,
                     false
             )
                     .setPreEqAllChannelsTo(preEq)
-                    .setPostEqAllChannelsTo(postEq)
-                    .setInputGainAllChannelsTo(0f)
+                    .setInputGainAllChannelsTo(-3f)
                     .build();
 
             dynamicsProcessing = new DynamicsProcessing(0, 0, config);
@@ -439,23 +436,12 @@ public class MainActivity extends Activity {
             StringBuilder result = new StringBuilder();
             result.append("DynamicsProcessing criado e habilitado.\n");
             result.append("Canais reportados: ").append(dynamicsProcessing.getChannelCount()).append("\n");
-            result.append("Pre-EQ lido de volta:\n");
+            result.append("Configuração lida de volta:\n");
             DynamicsProcessing.Eq activeEq = dynamicsProcessing
                     .getChannelByChannelIndex(0)
                     .getPreEq();
             for (int i = 0; i < activeEq.getBandCount(); i++) {
                 DynamicsProcessing.EqBand band = activeEq.getBand(i);
-                result.append("Banda ").append(i)
-                        .append(": cutoff ").append(band.getCutoffFrequency())
-                        .append(" Hz, ganho ").append(band.getGain())
-                        .append(" dB\n");
-            }
-            result.append("Post-EQ lido de volta:\n");
-            DynamicsProcessing.Eq activePostEq = dynamicsProcessing
-                    .getChannelByChannelIndex(0)
-                    .getPostEq();
-            for (int i = 0; i < activePostEq.getBandCount(); i++) {
-                DynamicsProcessing.EqBand band = activePostEq.getBand(i);
                 result.append("Banda ").append(i)
                         .append(": cutoff ").append(band.getCutoffFrequency())
                         .append(" Hz, ganho ").append(band.getGain())
@@ -482,7 +468,7 @@ public class MainActivity extends Activity {
         ));
 
         Button apply = new Button(this);
-        apply.setText("Aplicar teste forte 59 Hz");
+        apply.setText("Aplicar teste 59 Hz");
         apply.setOnClickListener(view -> {
             String result = applyDynamicsProcessingTest();
             report.setText(buildMeterReport(result));
